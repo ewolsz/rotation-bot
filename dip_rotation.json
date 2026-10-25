@@ -1,0 +1,45 @@
+{
+  "name": "Dip rotation across markets",
+  "written": "2026-10-25",
+  "note": "Written before any of these ETFs were looked at. SPY and QQQ are not traded: their dates were spent on dip_buy.json. SPY appears only as the benchmark.",
+
+  "universe": ["DIA", "IWM", "EFA", "EEM", "XLK", "XLF", "XLE", "XLV", "XLU", "XLI", "XLP", "XLY"],
+  "benchmark": "SPY",
+  "cash_rate_symbol": "^IRX",
+
+  "rule": {
+    "trend_days": 200,
+    "down_days": 3,
+    "max_hold_days": 5,
+    "cost_pct_round_trip": 0.05,
+    "max_positions": 3
+  },
+  "rule_in_words": [
+    "Every day at the close, check all 12 ETFs.",
+    "Signal: close above its 200-day average, and the close has fallen 3 days in a row.",
+    "Hold up to 3 positions. Each new one gets a third of the account (or whatever cash is left).",
+    "If more ETFs signal than there are open slots, take the deepest 3-day drop first.",
+    "Exit each position at the first close above the previous day's high, or after 5 trading days.",
+    "Cash not in a position earns the 13-week T-bill rate.",
+    "Cost: 0.05% off every round trip."
+  ],
+
+  "pass_mark": {
+    "min_trades": 100,
+    "expectancy_low_end_above_zero": true,
+    "beats_random_low_end_above_zero": true,
+    "cagr_above_benchmark": true,
+    "max_drawdown_below_benchmark": true
+  },
+  "pass_mark_in_words": [
+    "At least 100 trades.",
+    "Average trade after costs is positive, and the low end of its 95% range is above zero.",
+    "It beats random entries (random ETF from the list, random uptrend day, same exit), low end above zero.",
+    "Yearly return beats buying and holding SPY over the same dates.",
+    "Worst drop is smaller than SPY's."
+  ],
+
+  "explore_from": "2000-01-01",
+  "explore_until": "2014-12-31",
+  "final_test_from": "2015-01-01"
+}

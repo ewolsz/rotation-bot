@@ -1,0 +1,27 @@
+name: Rotation bot
+
+on:
+  schedule:
+    - cron: "45,50,55 16-20 * * 1-5"
+  workflow_dispatch: {}
+
+concurrency:
+  group: rotation-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx tzdata
+      - name: Run the bot
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python bot/rotation_bot.py run

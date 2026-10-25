@@ -4,6 +4,7 @@
     python bot/rotation_bot.py status          # account, positions, what it is tracking
     python bot/rotation_bot.py run --dry-run   # what it would do right now, no orders
     python bot/rotation_bot.py run             # do it (paper account only)
+    python bot/rotation_bot.py report          # report.md + trades.csv + equity.csv
 
 Meant to run unattended, either from GitHub Actions (.github/workflows/rotation.yml,
 free, no computer needed) or from a Mac schedule (bot/install_schedule.sh). It
@@ -238,7 +239,17 @@ class Alpaca:
             "type": "market", "time_in_force": "day",
             "client_order_id": order_tag(day, sym, "buy")}))
 
-    def daily_history(self, symbols, today: date) -> dict:
+    def portfolio_history(self) -> list[tuple[str, float]]:
+        """(date, equity) per day for the last year, as Alpaca records it."""
+        d = self._ok(self.trade.get("/v2/account/portfolio/history",
+                                    params={"period": "1A", "timeframe": "1D"}))
+        out = []
+        for t, e in zip(d.get("timestamp") or [], d.get("equity") or []):
+            if e:
+                out.append((datetime.fromtimestamp(t, tz=ET).date().isoformat(), float(e)))
+        return out
+
+    def daily_history(self, symbols, today: date, start: date | None = None) -> dict:
         """Completed daily bars up to yesterday."""
         # Midnight of the trading day, but never later than 20 minutes ago: on a
         # weekend the next close is days away, and asking for data up to then is
@@ -246,7 +257,7 @@ class Alpaca:
         end = min(datetime(today.year, today.month, today.day, tzinfo=ET),
                   datetime.now(timezone.utc) - timedelta(minutes=20))
         params = {"symbols": ",".join(symbols), "timeframe": "1Day",
-                  "start": (today - timedelta(days=HISTORY_DAYS)).isoformat(),
+                  "start": (start or today - timedelta(days=HISTORY_DAYS)).isoformat(),
                   "end": end.isoformat(),
                   "adjustment": "split", "feed": "sip", "limit": 10000}
         out: dict = {s: [] for s in symbols}
@@ -435,6 +446,137 @@ def cmd_run(api, cfg: dict, dry: bool, force_window: bool) -> int:
     return 1 if failed else 0
 
 
+# ---------------------------------------------------------------------------
+# report: everything in one place, for review
+# ---------------------------------------------------------------------------
+
+# The locked-away backtest (rules/dip_rotation.final.txt, 2015-01-01 to 2026-10-23).
+BACKTEST = {"win_rate": 0.681, "expectancy": 0.00222, "cagr": 0.071, "maxdd": 0.109,
+            "spy_cagr": 0.136, "spy_maxdd": 0.337, "trades_per_year": 76.5}
+
+
+def pair_trades(orders: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Match the bot's filled buys and sells into round trips, per symbol, in time order."""
+    fills = []
+    for o in orders:
+        cid = o.get("client_order_id") or ""
+        if not cid.startswith(TAG + "-") or o.get("status") not in ("filled", "partially_filled"):
+            continue
+        qty, px = float(o.get("filled_qty") or 0), float(o.get("filled_avg_price") or 0)
+        if qty <= 0 or px <= 0:
+            continue
+        fills.append({"symbol": o["symbol"], "side": o["side"], "qty": qty, "px": px,
+                      "at": o.get("filled_at") or o.get("submitted_at") or ""})
+    fills.sort(key=lambda f: f["at"])
+    open_buys: dict[str, dict] = {}
+    done, still_open = [], []
+    for f in fills:
+        if f["side"] == "buy":
+            b = open_buys.setdefault(f["symbol"], {"qty": 0.0, "cost": 0.0, "at": f["at"]})
+            b["qty"] += f["qty"]
+            b["cost"] += f["qty"] * f["px"]
+        elif f["symbol"] in open_buys:
+            b = open_buys.pop(f["symbol"])
+            proceeds = f["qty"] * f["px"]
+            done.append({"symbol": f["symbol"], "entry": b["at"][:10], "exit": f["at"][:10],
+                         "cost": round(b["cost"], 2), "proceeds": round(proceeds, 2),
+                         "pnl": round(proceeds - b["cost"], 2),
+                         "return": proceeds / b["cost"] - 1.0 if b["cost"] else 0.0})
+    for sym, b in open_buys.items():
+        still_open.append({"symbol": sym, "entry": b["at"][:10], "cost": round(b["cost"], 2)})
+    return done, still_open
+
+
+def curve_stats(points: list[tuple[str, float]]) -> dict:
+    if len(points) < 2:
+        return {"days": len(points), "total": 0.0, "maxdd": 0.0, "cagr": None}
+    vals = [v for _, v in points]
+    peak, dd = vals[0], 0.0
+    for v in vals:
+        peak = max(peak, v)
+        dd = max(dd, 1.0 - v / peak)
+    total = vals[-1] / vals[0] - 1.0
+    d0 = date.fromisoformat(points[0][0])
+    d1 = date.fromisoformat(points[-1][0])
+    years = (d1 - d0).days / 365.25
+    # a yearly rate from a few weeks is noise; only show it after 6 months
+    cagr = (vals[-1] / vals[0]) ** (1 / years) - 1.0 if years >= 0.5 else None
+    return {"days": len(points), "total": total, "maxdd": dd, "cagr": cagr,
+            "start": points[0][0], "end": points[-1][0]}
+
+
+def build_report(trades, still_open, equity_pts, spy_pts) -> str:
+    rets = [t["return"] for t in trades]
+    wins = [r for r in rets if r > 0]
+    losses = [r for r in rets if r <= 0]
+    eq, spy = curve_stats(equity_pts), curve_stats(spy_pts)
+    f = lambda x: "n/a" if x is None else f"{x * 100:+.2f}%"
+    lines = ["# Rotation bot report", "",
+             f"Generated {datetime.now(ET).strftime('%Y-%m-%d %H:%M ET')}. Paper account.", ""]
+    if eq.get("start"):
+        lines.append(f"Period: {eq['start']} to {eq['end']} ({eq['days']} trading days)")
+        lines.append("")
+    lines += ["## Bot vs backtest", "",
+              "| measure | bot (paper) | backtest 2015-2026 |", "|---|---|---|",
+              f"| completed trades | {len(rets)} | {BACKTEST['trades_per_year']:.0f} a year |",
+              f"| win rate | {len(wins) / len(rets):.1%} | {BACKTEST['win_rate']:.1%} |" if rets else
+              f"| win rate | n/a | {BACKTEST['win_rate']:.1%} |",
+              f"| avg trade after costs | {f(sum(rets) / len(rets)) if rets else 'n/a'} | "
+              f"{f(BACKTEST['expectancy'])} |",
+              f"| avg win / avg loss | {f(sum(wins) / len(wins)) if wins else 'n/a'} / "
+              f"{f(sum(losses) / len(losses)) if losses else 'n/a'} | |",
+              f"| account return | {f(eq['total'])} | |",
+              f"| yearly rate | {f(eq['cagr'])} | {f(BACKTEST['cagr'])} |",
+              f"| worst drop | {f(-eq['maxdd'])} | {f(-BACKTEST['maxdd'])} |",
+              "", "## Bot vs holding SPY, same dates", "",
+              "| | return | worst drop |", "|---|---|---|",
+              f"| bot | {f(eq['total'])} | {f(-eq['maxdd'])} |",
+              f"| SPY | {f(spy['total'])} | {f(-spy['maxdd'])} |", ""]
+    if len(rets) < 40:
+        lines += [f"Only {len(rets)} completed trades so far. Under about 40, these numbers "
+                  "are mostly noise; judge the bot later, not now.", ""]
+    if still_open:
+        lines += ["## Open positions", "", "| symbol | bought | cost |", "|---|---|---|"]
+        lines += [f"| {o['symbol']} | {o['entry']} | ${o['cost']:,.2f} |" for o in still_open]
+        lines.append("")
+    lines += ["Trade-by-trade detail is in trades.csv, daily balance in equity.csv.",
+              "Not financial advice."]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_report(api, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(ET).date()
+    orders = api.orders(today - timedelta(days=400))
+    trades, still_open = pair_trades(orders)
+    equity_pts = api.portfolio_history()
+    if equity_pts:
+        first = date.fromisoformat(equity_pts[0][0])
+        spy = api.daily_history(["SPY"], today + timedelta(days=1), start=first)["SPY"]
+        spy_pts = [(b["date"], b["close"]) for b in spy if b["date"] >= equity_pts[0][0]]
+    else:
+        spy_pts = []
+
+    with (out_dir / "trades.csv").open("w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["symbol", "entry", "exit", "cost", "proceeds",
+                                           "pnl", "return"])
+        w.writeheader()
+        for t in trades:
+            w.writerow({**t, "return": f"{t['return']:.5f}"})
+    with (out_dir / "equity.csv").open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["date", "equity"])
+        w.writerows(equity_pts)
+    md = build_report(trades, still_open, equity_pts, spy_pts)
+    (out_dir / "report.md").write_text(md)
+    print(md)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as fh:
+            fh.write(md)
+    print(f"written to {out_dir}/ (report.md, trades.csv, equity.csv)")
+
+
 def main():
     p = argparse.ArgumentParser(description="dip rotation bot (Alpaca paper)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -443,7 +585,9 @@ def main():
     r.add_argument("--dry-run", action="store_true", help="show the plan, place nothing")
     r.add_argument("--any-time", action="store_true",
                    help="allow a dry run outside the closing window (never places orders)")
-    t = sub.add_parser("test-alert", help="send a test notification to your phone")
+    sub.add_parser("test-alert", help="send a test notification to your phone")
+    rp = sub.add_parser("report", help="everything in one place: report.md, trades.csv, equity.csv")
+    rp.add_argument("--out", default="report")
     args = p.parse_args()
 
     if args.cmd == "test-alert":
@@ -457,6 +601,9 @@ def main():
     api = Alpaca(*load_keys())
     if args.cmd == "status":
         cmd_status(api)
+        return 0
+    if args.cmd == "report":
+        cmd_report(api, Path(args.out))
         return 0
     try:
         return cmd_run(api, cfg, args.dry_run, args.any_time)

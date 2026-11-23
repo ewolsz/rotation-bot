@@ -1,6 +1,6 @@
 # Rotation bot report
 
-Generated 2026-11-21 19:56 ET. Paper account.
+Generated 2026-11-23 17:28 ET. Paper account.
 
 Period: 2026-10-22 to 2026-11-20 (22 trading days)
 
@@ -21,7 +21,7 @@ Period: 2026-10-22 to 2026-11-20 (22 trading days)
 | | return | worst drop |
 |---|---|---|
 | bot | -2.41% | -2.87% |
-| SPY | -9.71% | -10.68% |
+| SPY | -5.45% | -10.68% |
 
 Only 3 completed trades so far. Under about 40, these numbers are mostly noise; judge the bot later, not now.
 
@@ -31,6 +31,7 @@ Only 3 completed trades so far. Under about 40, these numbers are mostly noise; 
 |---|---|---|
 | XLF | 2026-11-19 | $32,927.74 |
 | XLV | 2026-11-19 | $32,927.74 |
+| XLE | 2026-11-23 | $32,326.01 |
 
 Trade-by-trade detail is in trades.csv, daily balance in equity.csv.
 Not financial advice.

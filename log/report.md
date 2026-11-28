@@ -1,6 +1,6 @@
 # Rotation bot report
 
-Generated 2026-11-26 22:46 ET. Paper account.
+Generated 2026-11-27 22:30 ET. Paper account.
 
 Period: 2026-10-22 to 2026-11-25 (25 trading days)
 
@@ -21,7 +21,7 @@ Period: 2026-10-22 to 2026-11-25 (25 trading days)
 | | return | worst drop |
 |---|---|---|
 | bot | +0.49% | -2.87% |
-| SPY | -6.19% | -10.68% |
+| SPY | -4.67% | -10.68% |
 
 Only 6 completed trades so far. Under about 40, these numbers are mostly noise; judge the bot later, not now.
 
